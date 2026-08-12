@@ -108,6 +108,30 @@ jobs:
           ignore-unfixed: true
           severity: CRITICAL,HIGH
 
+      - name: Inspect Python installation
+        run: |
+          docker run --rm devsecops-lab:latest sh -c "
+          echo '--- Python ---'
+          python --version
+
+          echo '--- Pip ---'
+          pip --version
+  
+          echo '--- msgpack ---'
+          pip show msgpack
+
+          echo '--- setuptools ---'
+          pip show setuptools
+
+          echo '--- Python paths ---'
+          python -c 'import sys; print(\"\\n\".join(sys.path))'
+
+          echo '--- Package metadata files ---'
+          find /usr/local/lib/python3.13/site-packages \
+           \( -iname '*msgpack*' -o -iname '*setuptools*' \) \
+           -print
+          "
+
       - name: Inspect Trivy results
         run: |
           python - <<'PY'
@@ -133,30 +157,4 @@ jobs:
                     vuln.get("VulnerabilityID")
                     )
           PY
-         
-      - name: Inspect Python installation
-  run: |
-    docker run --rm devsecops-lab:latest sh -c "
-      echo '--- Python ---'
-      python --version
-    
-      echo '--- Pip ---'
-      pip --version
-
-      echo '--- msgpack ---'
-      pip show msgpack
-
-      echo '--- setuptools ---'
-      pip show setuptools
-
-      echo '--- Python paths ---'
-      python -c 'import sys; print(\"\\n\".join(sys.path))'
-
-      echo '--- Package metadata files ---'
-      find /usr/local/lib/python3.13/site-packages \
-        \( -iname '*msgpack*' -o -iname '*setuptools*' \) \
-        -print
-    "
-          - name: Inspect Docker image layers
-  run: docker history devsecops-lab:latest
-      
+          
