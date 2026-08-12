@@ -81,12 +81,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Show commit being built
+        run: git log -1 --oneline
+
       - name: Build Docker image
         run: docker build --no-cache -t devsecops-lab:latest .
 
-      - name: Verify Python package versions
+      - name: Verify package versions
         run: |
           docker run --rm devsecops-lab:latest python -c "import msgpack, setuptools; print('msgpack:', msgpack.__version__); print('setuptools:', setuptools.__version__)"
+
+      - name: Show installed packages
+        run: |
+          docker run --rm devsecops-lab:latest pip list | grep -E "msgpack|setuptools"
 
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@master
