@@ -52,7 +52,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Semgrep
+        run: pip install semgrep
+
       - name: Run Semgrep
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: p/python
+        run: semgrep scan --config p/python .
