@@ -42,7 +42,7 @@ jobs:
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
-    sast:
+  sast:
 
     runs-on: ubuntu-latest
 
