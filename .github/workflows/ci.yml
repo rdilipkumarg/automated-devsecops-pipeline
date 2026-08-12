@@ -94,6 +94,9 @@ jobs:
       - name: Show installed packages
         run: |
           docker run --rm devsecops-lab:latest pip list | grep -E "msgpack|setuptools"
+      - name: Inspect Python package metadata
+        run: |
+          docker run --rm devsecops-lab:latest sh -c "find /usr/local/lib/python3.13/site-packages -maxdepth 1 \( -iname '*msgpack*' -o -iname '*setuptools*' \) -print"
 
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@master
