@@ -1,0 +1,48 @@
+name: DAST Security Scan
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build --pull --no-cache -t devsecops-lab:latest .
+
+      - name: Start application
+        run: |
+          docker run -d \
+            --name devsecops-app \
+            -p 5001:5001 \
+            devsecops-lab:latest
+
+      - name: Wait for application
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:5001; then
+              echo "Application is ready"
+              exit 0
+            fi
+
+            echo "Waiting for application..."
+            sleep 2
+          done
+
+          echo "Application failed to start"
+          docker logs devsecops-app
+          exit 1
+
+      - name: Run OWASP ZAP
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: 'http://localhost:5001'
