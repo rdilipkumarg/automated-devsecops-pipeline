@@ -157,4 +157,6 @@ jobs:
                     vuln.get("VulnerabilityID")
                     )
           PY
-          
+
+      - name: Inspect Docker image layers
+        run: docker history devsecops-lab:latest
