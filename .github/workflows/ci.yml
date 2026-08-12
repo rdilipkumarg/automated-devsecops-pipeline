@@ -1,4 +1,4 @@
-name: CI
+name: DevSecOps Security Pipeline
 
 on:
   push:
@@ -8,9 +8,22 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  IMAGE_NAME: devsecops-lab:latest
+  CONTAINER_NAME: devsecops-app
+  APP_PORT: 5001
+
 jobs:
 
+  # ============================================================
+  # 1. UNIT TESTS
+  # ============================================================
   test:
+    name: Unit Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -26,13 +39,35 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
 
-      - name: Run tests
-        run: pytest
+      - name: Run pytest
+        run: |
+          pytest -v
 
 
-  secret-scan:
+  # ============================================================
+  # 2. SAST - SEMGREP
+  # ============================================================
+  sast:
+    name: SAST - Semgrep
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: p/python
+          publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+
+  # ============================================================
+  # 3. SECRET SCANNING - GITLEAKS
+  # ============================================================
+  secrets:
+    name: Secret Scanning - Gitleaks
     runs-on: ubuntu-latest
 
     steps:
@@ -43,22 +78,15 @@ jobs:
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 
-  sast:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Semgrep
-        run: pip install semgrep
-
-      - name: Run Semgrep
-        run: semgrep scan --config p/python .
-
+  # ============================================================
+  # 4. SOFTWARE COMPOSITION ANALYSIS - TRIVY
+  # ============================================================
   dependency-scan:
+    name: Dependency Scan - Trivy
     runs-on: ubuntu-latest
 
     steps:
@@ -70,93 +98,186 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
-          scanners: vuln
+          format: table
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
           exit-code: 1
+          trivyignores: .trivyignore
 
+
+  # ============================================================
+  # 5. BUILD DOCKER IMAGE
+  # ============================================================
   docker-build:
+    name: Docker Build
     runs-on: ubuntu-latest
+
+    needs:
+      - test
+      - sast
+      - secrets
+      - dependency-scan
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Show commit being built
-        run: git log -1 --oneline
+        run: |
+          git log -1 --oneline
 
       - name: Build Docker image
-        run: docker build --pull --no-cache -t devsecops-lab:latest .
-
-      - name: Verify package versions
         run: |
-          docker run --rm devsecops-lab:latest python -c "import msgpack, setuptools; print('msgpack:', msgpack.__version__); print('setuptools:', setuptools.__version__)"
+          docker build \
+            --pull \
+            --no-cache \
+            -t ${{ env.IMAGE_NAME }} .
 
-      - name: Show installed packages
-        run: |
-          docker run --rm devsecops-lab:latest pip list | grep -E "msgpack|setuptools"
-      - name: Inspect Python package metadata
-        run: |
-          docker run --rm devsecops-lab:latest sh -c "find /usr/local/lib/python3.13/site-packages -maxdepth 1 \( -iname '*msgpack*' -o -iname '*setuptools*' \) -print"
 
+      # ========================================================
+      # VERIFY APPLICATION DEPENDENCIES
+      # ========================================================
+      - name: Verify Python packages
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }} pip list
+
+      # ========================================================
+      # VERIFY APPLICATION STARTUP
+      # ========================================================
+      - name: Start application container
+        run: |
+          docker run -d \
+            --name ${{ env.CONTAINER_NAME }} \
+            -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
+            ${{ env.IMAGE_NAME }}
+
+      - name: Wait for application
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:${{ env.APP_PORT }}; then
+              echo "Application is ready"
+              exit 0
+            fi
+
+            echo "Waiting for application..."
+            sleep 2
+          done
+
+          echo "Application failed to start"
+          docker logs ${{ env.CONTAINER_NAME }}
+          exit 1
+
+      # ========================================================
+      # SECURITY HEADERS
+      # ========================================================
+      - name: Verify security headers
+        run: |
+          curl -I http://localhost:${{ env.APP_PORT }}
+
+      # ========================================================
+      # TRIVY CONTAINER SCAN
+      # ========================================================
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: devsecops-lab:latest
+          image-ref: ${{ env.IMAGE_NAME }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+          trivyignores: .trivyignore
+
+      # ========================================================
+      # TRIVY JSON REPORT
+      # ========================================================
+      - name: Generate Trivy report
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}
           format: json
           output: trivy-results.json
-          exit-code: 0
-          ignore-unfixed: true
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 0
+          trivyignores: .trivyignore
 
-      - name: Inspect Python installation
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-container-report
+          path: trivy-results.json
+
+      # ========================================================
+      # CLEANUP
+      # ========================================================
+      - name: Stop application
+        if: always()
         run: |
-          docker run --rm devsecops-lab:latest sh -c "
-          echo '--- Python ---'
-          python --version
+          docker stop ${{ env.CONTAINER_NAME }} || true
+          docker rm ${{ env.CONTAINER_NAME }} || true
 
-          echo '--- Pip ---'
-          pip --version
-  
-          echo '--- msgpack ---'
-          pip show msgpack
 
-          echo '--- setuptools ---'
-          pip show setuptools
+  # ============================================================
+  # 6. DAST - OWASP ZAP
+  # ============================================================
+  dast:
+    name: DAST - OWASP ZAP
+    runs-on: ubuntu-latest
 
-          echo '--- Python paths ---'
-          python -c 'import sys; print(\"\\n\".join(sys.path))'
+    needs:
+      - docker-build
 
-          echo '--- Package metadata files ---'
-          find /usr/local/lib/python3.13/site-packages \
-           \( -iname '*msgpack*' -o -iname '*setuptools*' \) \
-           -print
-          "
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Inspect Trivy results
+      - name: Build Docker image
         run: |
-          python - <<'PY'
-          import json
+          docker build \
+            --pull \
+            --no-cache \
+            -t ${{ env.IMAGE_NAME }} .
 
-          with open("trivy-results.json") as f:
-             data = json.load(f)
+      - name: Start application
+        run: |
+          docker run -d \
+            --name ${{ env.CONTAINER_NAME }} \
+            -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
+            ${{ env.IMAGE_NAME }}
 
-          for result in data.get("Results", []):
-             print("\nTARGET:", result.get("Target"))
-             print("TYPE:", result.get("Type"))
+      - name: Wait for application
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:${{ env.APP_PORT }}; then
+              echo "Application is ready"
+              exit 0
+            fi
 
-             for vuln in result.get("Vulnerabilities") or []:
-                 if vuln.get("PkgName") in ["msgpack", "setuptools"]:
-                   print(
-                    "PACKAGE:",
-                    vuln.get("PkgName"),
-                    "| INSTALLED:",
-                    vuln.get("InstalledVersion"),
-                    "| FIXED:",
-                    vuln.get("FixedVersion"),
-                    "| CVE:",
-                    vuln.get("VulnerabilityID")
-                    )
-          PY
+            echo "Waiting for application..."
+            sleep 2
+          done
 
-      - name: Inspect Docker image layers
-        run: docker history devsecops-lab:latest
+          echo "Application failed to start"
+
+          docker logs ${{ env.CONTAINER_NAME }}
+
+          exit 1
+
+      # ========================================================
+      # OWASP ZAP BASELINE SCAN
+      # ========================================================
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: http://localhost:${{ env.APP_PORT }}
+
+      # ========================================================
+      # CLEANUP
+      # ========================================================
+      - name: Stop application
+        if: always()
+        run: |
+          docker stop ${{ env.CONTAINER_NAME }} || true
+          docker rm ${{ env.CONTAINER_NAME }} || true
