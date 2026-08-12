@@ -85,7 +85,7 @@ jobs:
         run: git log -1 --oneline
 
       - name: Build Docker image
-        run: docker build --no-cache -t devsecops-lab:latest .
+        run: docker build --pull --no-cache -t devsecops-lab:latest .
 
       - name: Verify package versions
         run: |
